@@ -1,0 +1,14 @@
+name: redditbot
+
+channels:
+    - pytorch
+
+dependencies:
+    - pytorch
+    - torchvision
+    - pip
+    - pip:
+        - praw
+        - Flask
+        - transformers
+
