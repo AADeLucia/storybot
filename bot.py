@@ -24,10 +24,30 @@ logging.basicConfig(level=logging.INFO)
 with open("config.json", "r") as f:
     config = json.loads(f.read())
 
+# Login to Reddit
+try:
+    # Reddit service
+    # Initialize Reddit service
+    reddit = praw.Reddit(
+        user_agent=config["user_agent"],
+        client_id=config["client_id"],
+        client_secret=config["client_secret"],
+        username=config["username"],
+        password=config["password"]
+    )
+
+    # Test credentials
+    reddit.user.me()
+except OAuthException as err:
+    logging.error(f"Issue connecting to Reddit. Check login values.\n{err}")
+    sys.exit(1)
+
+WAIT_TIME = 10 * 60
+
 # Load model
 model_path = config["model_path"]
 stop_token = "<|endoftext|>"
-max_length = 1000
+MAX_LENGTH = 1000
 device = "cpu"
 torch.device(device)
 tokenizer = GPT2Tokenizer.from_pretrained(model_path)
@@ -37,15 +57,7 @@ model.to(device)
 logging.info(f"\n\n")
 
 
-def get_model_response(prompt):
-    """Get response from the model"""
-    # Encode prompt
-    full_prompt = f"{prompt} [RESPONSE]"
-    logging.debug(f"prompt: {full_prompt}")
-    encoded_prompt = tokenizer.encode(full_prompt, return_tensors="pt")
-    logging.debug(f"encoded prompt: {len(encoded_prompt)} {encoded_prompt}")
-    encoded_prompt = encoded_prompt.to(device)
-
+def _generate(encoded_prompt, max_length):
     # Generate
     output_sequence = model.generate(
         input_ids=encoded_prompt,
@@ -60,7 +72,27 @@ def get_model_response(prompt):
         num_return_sequences=1,
     )
     output_sequence = output_sequence[0]
-    logging.debug(f"output_sequence: {output_sequence}")
+    return output_sequence
+
+
+def get_model_response(prompt):
+    """Get response from the model"""
+    # Encode prompt
+    full_prompt = f"{prompt} [RESPONSE]"
+    logging.debug(f"prompt: {full_prompt}")
+    encoded_prompt = tokenizer.encode(full_prompt, return_tensors="pt")
+    logging.debug(f"encoded prompt: {len(encoded_prompt)} {encoded_prompt}")
+    encoded_prompt = encoded_prompt.to(device)
+
+    # Generate response
+    max_length = MAX_LENGTH
+    while True:
+        try:
+            output_sequence = _generate(encoded_prompt, max_length=max_length)
+            break
+        except IndexError as err:
+            logging.warning(f"Max length {max_length} caused error. Reducing length by 50:\n {err}")
+            max_length -= 50
 
     # Decode response
     response = tokenizer.decode(output_sequence, clean_up_tokenization_spaces=True)
@@ -75,34 +107,39 @@ def format_reply(response):
 
 
 if __name__ == "__main__":
-    try:
-        # Reddit service
-        # Initialize Reddit service
-        reddit = praw.Reddit(
-            user_agent=config["user_agent"],
-            client_id=config["client_id"],
-            client_secret=config["client_secret"],
-            username=config["username"],
-            password=config["password"]
-        )
-
-        # Test credentials
-        reddit.user.me()
-    except OAuthException as err:
-        logging.error(f"Issue connecting to Reddit. Check login values.\n{err}")
-        sys.exit(1)
-
     # Search r/WritingPrompts
     # Want the top 10 posts of the day
+    # Cross-post them to r/StoryGenAI and reply to them
     subreddit = reddit.subreddit("WritingPrompts")
-    for sub in subreddit.search("flair:WritingPrompt", time_filter="day", sort="new", limit=5):
-        try: 
-            response = get_model_response(sub.title)
-            logging.info(f"{sub.title}\n{response}\n\n")
-            sub.reply(format_reply(response))
-        except RedditAPIException as err:
-            logging.warning(f"Hit rate limit. Sleeping and trying again.")
-            time.sleep(60)
-            continue
+    logging.info(reddit.auth.limits)
+
+    # Get top 10 WritingPrompt posts of the day
+    top_writing_prompts = subreddit.search("flair:WritingPrompt", time_filter="day", sort="top", limit=10)
+
+    for post in top_writing_prompts:
+        logging.info(reddit.auth.limits)
+
+        # Irritating while loops to combat rate limit
+        while True:
+            try: 
+                # Cross-post
+                crosspost_sub = post.crosspost("StoryGenAI", send_replies=False)
+                break
+            except RedditAPIException as err:
+                logging.warning(f"Hit rate limit. Sleeping and trying again.\n{err}")
+                time.sleep(WAIT_TIME)
+
+        # Generate a response to the post
+        response = get_model_response(post.title)
+        logging.info(f"{post.title}\n{response}\n\n")
+        
+        # Reply to the new post
+        while True:
+            try: 
+                reply = crosspost_sub.reply(format_reply(response))
+                break
+            except RedditAPIException as err:
+                logging.warning(f"Hit rate limit. Sleeping and trying again.\n{err}")
+                time.sleep(WAIT_TIME)
 
 
