@@ -123,7 +123,7 @@ if __name__ == "__main__":
         while True:
             try: 
                 # Cross-post
-                crosspost_sub = post.crosspost("StoryGenAI", send_replies=False)
+                crosspost_sub = post.crosspost("StoryGenAI", send_replies=False, flair_id="79f236dc-a93b-11ea-ab34-0e2ac1b274db")
                 break
             except RedditAPIException as err:
                 logging.warning(f"Hit rate limit. Sleeping and trying again.\n{err}")
